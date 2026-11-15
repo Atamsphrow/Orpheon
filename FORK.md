@@ -15,3 +15,6 @@ Upstream license and credits are kept unchanged.
 Note: GitHub disables workflows on a forked repository by default; Actions was
 enabled on this fork on 2026-11-15 via the « I understand my workflows »
 button on the Actions page, so pushes to `main` run the Android workflow.
+(The first run after enabling, 43752727234, failed at startup with no jobs
+and no logs — likely the enablement still propagating; re-triggered by the
+next push.)
