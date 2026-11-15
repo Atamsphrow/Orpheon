@@ -368,6 +368,27 @@ fun SettingsScreen(navController: NavController) {
                 checked = com.music.spotui.data.preferences.LyricsOfflinePref.on,
                 onChecked = { com.music.spotui.data.preferences.LyricsOfflinePref.set(ctx, it) },
             )
+            // Songs as plain files in the phone's Download folder, visible in the file manager.
+            val publicDownloads = com.music.spotui.data.preferences.isPublicDownloads(ctx)
+            val allFilesGranted = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R &&
+                android.os.Environment.isExternalStorageManager()
+            OptionRow(
+                label = stringResource(R.string.settings_download_public_title),
+                detail = stringResource(if (publicDownloads && !allFilesGranted) R.string.settings_download_public_needs_access else R.string.settings_download_public_detail),
+                checked = publicDownloads,
+                onChecked = {
+                    com.music.spotui.data.preferences.setPublicDownloads(ctx, it)
+                    com.music.spotui.data.offline.OfflineStore.refreshPublicMode(ctx)
+                    // All files access exists only on Android 11+: on older phones the
+                    // toggle simply stays without effect (the store falls back to private).
+                    if (it && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R && !allFilesGranted) {
+                        ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                            data = android.net.Uri.fromParts("package", ctx.packageName, null)
+                            addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        })
+                    }
+                },
+            )
             // What the app keeps on the phone: the caches (emptied here) and the downloads.
             Section(R.string.settings_section_storage)
             StorageRows()

@@ -20,6 +20,9 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- "Visible files" downloads only: plain songs in the phone's Music folder need full
+         access to shared storage. Granted in Android Settings, never asked for up front. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <!-- Android TV: listed in the TV launcher (a short version of the app, ui/tv); nothing here needs a touchscreen. -->
     <uses-feature android:name="android.software.leanback" android:required="false" />

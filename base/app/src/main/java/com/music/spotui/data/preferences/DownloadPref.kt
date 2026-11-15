@@ -12,6 +12,7 @@ private const val KEY_HI_RES = "hires_24bit"
 private const val KEY_ENABLED = "enabled"
 private const val KEY_SMALL = "small_aac"
 private const val KEY_ASK = "ask_each_time"
+private const val KEY_PUBLIC = "public_music"
 
 /**
  * Hi-res downloads (24-bit when the source has it: bigger files, ~3× a CD-quality FLAC).
@@ -35,5 +36,15 @@ fun setSmallDownloads(context: Context, on: Boolean) = prefs(context).edit().put
 fun isAskDownloadQuality(context: Context): Boolean = ProfilePrefs.getBoolean(prefs(context), KEY_ASK, false)
 
 fun setAskDownloadQuality(context: Context, on: Boolean) = prefs(context).edit().putBoolean(ProfilePrefs.key(KEY_ASK), on).apply()
+
+/**
+ * Downloads saved as plain files in the phone's Download folder (Download/Orpheon), visible in the
+ * file manager and playable by other apps — instead of encrypted in the app's private storage.
+ * Default off: private, encrypted. Takes effect only with Android's "All files access" granted;
+ * without it the store falls back to private (see OfflineStore.songAudioDir).
+ */
+fun isPublicDownloads(context: Context): Boolean = ProfilePrefs.getBoolean(prefs(context), KEY_PUBLIC, false)
+
+fun setPublicDownloads(context: Context, on: Boolean) = prefs(context).edit().putBoolean(ProfilePrefs.key(KEY_PUBLIC), on).apply()
 
 private fun prefs(c: Context) = c.getSharedPreferences(PREF, Context.MODE_PRIVATE)

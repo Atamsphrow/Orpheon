@@ -740,6 +740,28 @@ private fun DownloadsPage(navController: NavController, open: (SettingsPage) -> 
                     onChecked = { com.music.spotui.data.preferences.LyricsOfflinePref.set(ctx, it) }, detail = stringResource(R.string.settings_download_lyrics_detail))
             }
         }
+        // Songs as plain files in the phone's Download folder, visible in the file manager.
+        immersiveGroup("visible") {
+            row {
+                val public = com.music.spotui.data.preferences.isPublicDownloads(ctx)
+                val granted = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R &&
+                    android.os.Environment.isExternalStorageManager()
+                ImmersiveSwitchRow(stringResource(R.string.settings_download_public_title), checked = public,
+                    onChecked = {
+                        com.music.spotui.data.preferences.setPublicDownloads(ctx, it)
+                        com.music.spotui.data.offline.OfflineStore.refreshPublicMode(ctx)
+                        // All files access exists only on Android 11+: on older phones the
+                        // toggle simply stays without effect (the store falls back to private).
+                        if (it && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R && !granted) {
+                            ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                data = android.net.Uri.fromParts("package", ctx.packageName, null)
+                                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            })
+                        }
+                    },
+                    detail = stringResource(if (public && !granted) R.string.settings_download_public_needs_access else R.string.settings_download_public_detail))
+            }
+        }
         // Their space and their removal: in Storage.
         if (com.music.spotui.data.offline.OfflineStore.tracks.isNotEmpty()) immersiveGroup("storage") {
             row {

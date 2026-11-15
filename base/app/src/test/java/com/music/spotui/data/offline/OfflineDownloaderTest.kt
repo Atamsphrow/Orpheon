@@ -108,4 +108,40 @@ class OfflineDownloaderTest {
             assertTrue(OfflineStore.localIdOf(id) < 0)
         }
     }
+
+    @Test fun publicFileNameIsReadableAndUnique() {
+        assertEquals(
+            "Daft Punk - Get Lucky [4uLU6hMCjMI75M1A2tKUQC].flac",
+            OfflineDownloader.publicFileName("Get Lucky", "Daft Punk", "4uLU6hMCjMI75M1A2tKUQC", "flac"),
+        )
+        // Characters a file manager or MediaStore would choke on are replaced.
+        assertEquals(
+            "AC-DC - Back - In - Black [abc123].mp3",
+            OfflineDownloader.publicFileName("Back / In : Black?", "AC/DC", "abc123", "mp3"),
+        )
+        // No artist or title left: the track id alone.
+        assertEquals(
+            "abc123.m4a",
+            OfflineDownloader.publicFileName("", "   ", "abc123", "m4a"),
+        )
+    }
+
+    @Test fun publicFileNameStaysShort() {
+        val name = OfflineDownloader.publicFileName("T".repeat(200), "A".repeat(200), "abc123", "flac")
+        assertTrue(name.length < 150)
+        assertTrue(name.endsWith("[abc123].flac"))
+    }
+
+    @Test fun publicFileNameStaysUnderTheByteLimit() {
+        val name = OfflineDownloader.publicFileName("あ".repeat(200), "ア".repeat(200), "abc123", "flac")
+        assertTrue(name.toByteArray(Charsets.UTF_8).size <= 200)
+        assertTrue(name.endsWith("[abc123].flac"))
+    }
+
+    @Test fun mimeForExt() {
+        assertEquals("audio/flac", OfflineDownloader.mimeForExt("flac"))
+        assertEquals("audio/mp4", OfflineDownloader.mimeForExt("m4a"))
+        assertEquals("audio/mpeg", OfflineDownloader.mimeForExt("mp3"))
+        assertEquals("audio/*", OfflineDownloader.mimeForExt("ogg"))
+    }
 }

@@ -16,6 +16,11 @@ import java.security.MessageDigest
  * brings that account's own folder back. Nothing is deleted: a phone shared by two accounts keeps
  * both sets, each seen only by its own account. Downloads made before the stamp existed go to the
  * first account seen signed in.
+ *
+ * Songs saved as visible files (Download/Orpheon) are not moved: they belong to the phone, not the
+ * account. The folder still moves (index, covers, queues), so signing in again re-links the same
+ * account's songs to the files that stayed in Download/; another account simply does not see them
+ * in its Downloaded list.
  */
 object OfflineAccounts {
     private const val OWNER = "owner"

@@ -778,6 +778,9 @@
     <string name="settings_system_font_detail">Affiche le texte de l\'app avec la police de ton téléphone au lieu de celle de Orpheon</string>
     <string name="settings_download_lyrics_title">Télécharger les paroles avec les titres</string>
     <string name="settings_download_lyrics_detail">Un titre téléchargé garde ses paroles, affichées sans connexion</string>
+    <string name="settings_download_public_title">Enregistrer les téléchargements en fichiers visibles</string>
+    <string name="settings_download_public_detail">Les nouveaux titres sont enregistrés en clair dans Download/Orpheon, visibles dans le gestionnaire de fichiers et lisibles par d\'autres applis. Les titres déjà téléchargés restent où ils sont.</string>
+    <string name="settings_download_public_needs_access">L\'accès « Tous les fichiers » n\'est pas encore accordé : ouvre les paramètres Android pour l\'autoriser, les téléchargements iront alors dans Download/Orpheon.</string>
     <string name="settings_section_storage">Stockage</string>
     <string name="settings_storage_media_cache">Cache média</string>
     <string name="settings_storage_media_cache_detail">Vidéos Canvas gardées sur ce téléphone, pour ne pas les télécharger à nouveau.</string>

@@ -20,6 +20,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.withPermit
 import org.json.JSONArray
 import org.json.JSONObject
@@ -38,7 +39,11 @@ import java.util.concurrent.ConcurrentHashMap
  *    into one FLAC, or an M4A / MP3);
  * 2. checks what any file must pass, whoever sent it: real, decodable audio whose length
  *    is the song's (Spotify's duration), so a preview or another cut is refused;
- * 3. keeps it encrypted ([OfflineCrypto]), with its cover, in the Downloaded list.
+ * 3. keeps it encrypted ([OfflineCrypto]), with its cover, in the Downloaded list — unless
+ *    "visible files" is on ([OfflineStore.isPublicAudio]): the song is then saved in plain in
+ *    the phone's Download folder (Download/Orpheon), where the file manager and other players see it.
+ * 4. embeds the track's lyrics in the file itself ([LyricsEmbedder]: USLT/SYLT, `©lyr`,
+ *    Vorbis LYRICS — plus a `.lrc` sidecar next to a visible FLAC), for other players.
  *
  * No extension giving download files: downloads say to install one. Nothing that fails the
  * check is kept: the song is marked unavailable instead.
@@ -50,6 +55,8 @@ object OfflineDownloader {
     private const val SHORTER_MAX = 5
     /** And this much longer (trailing silence, a longer intro): more is another version. */
     private const val LONGER_MAX = 15
+    /** How long a download waits for the lyrics before going on without them. */
+    private const val LYRICS_WAIT_MS = 15_000L
 
     data class Request(
         val trackId: String,
@@ -310,48 +317,94 @@ object OfflineDownloader {
             currentCoroutineContext().ensureActive()
 
             val out: File
+            // Visible files: a readable name ("Artist - Title [trackId].flac") in the Download
+            // folder; private files keep the bare track id as their name, as before.
+            val public = OfflineStore.isPublicAudio
+            val ext = if (file.lossy != null) file.lossy
+                else if (quality == com.music.spotui.data.preferences.DownloadQuality.SMALL) "m4a" else "flac"
+            val name = if (public) publicFileName(meta.title, meta.artist, r.trackId, ext) else "${r.trackId}.$ext"
+            out = File(OfflineStore.songAudioDir, name)
+            if (public) OfflineStore.songAudioDir.mkdirs()
             if (file.lossy != null) {
                 // A small file as the source served it (M4A, MP3): kept as it is.
-                out = File(OfflineStore.audioDir, "${r.trackId}.${file.lossy}")
-                if (!audioTmp.renameTo(out)) throw IOException("could not move the file")
+                if (!moveFile(audioTmp, out)) throw IOException("could not move the file")
             } else if (quality == com.music.spotui.data.preferences.DownloadQuality.SMALL) {
                 // "Smallest": the checked FLAC becomes AAC, encoded on the phone.
-                out = File(OfflineStore.audioDir, "${r.trackId}.m4a")
                 val aacTmp = File(OfflineStore.tmpDir, "${r.trackId}.m4apart")
                 try {
                     // Encoding is long: a few at a time, the other downloads go on meanwhile.
                     encodeSlots.withPermit { runInterruptible(Dispatchers.Default) { AacTranscoder.transcode(audioTmp, aacTmp) } }
-                    if (aacTmp.length() < 10_000 || !aacTmp.renameTo(out)) throw IOException("could not encode the small file")
+                    if (aacTmp.length() < 10_000 || !moveFile(aacTmp, out)) throw IOException("could not encode the small file")
                 } finally {
                     aacTmp.delete()
                 }
             } else {
-                out = File(OfflineStore.audioDir, "${r.trackId}.flac")
-                if (!audioTmp.renameTo(out)) throw IOException("could not move the file")
+                if (!moveFile(audioTmp, out)) throw IOException("could not move the file")
             }
             // The audio is complete on disk from here on: "stop all" must not interrupt this last
             // part, or the file would stay out of the index and be swept as a stray at startup.
             return withContext(NonCancellable) {
-                // Kept encrypted: the file only plays in Myspoti, on this phone.
-                runInterruptible(Dispatchers.IO) { OfflineCrypto.encryptInPlace(Graph.app, out) }
-                val cover = runCatching {
+                // The cover, downloaded now: it is embedded in the file below, and kept
+                // beside it as the <trackId>.jpg Orpheon's own screens read.
+                val coverFile = runCatching {
                     val c = File(OfflineStore.coverDir, "${r.trackId}.jpg")
-                    httpGet(app.myspoti.host.android.Covers.large(meta.coverUrl), c); c.name
-                }.getOrDefault("")
+                    httpGet(app.myspoti.host.android.Covers.large(meta.coverUrl), c); c
+                }.getOrNull()
+                // The lyrics and the cover, embedded in the file itself for other players
+                // (Musync reads USLT/SYLT and APIC, ©lyr and covr, and a .lrc sidecar
+                // next to a FLAC): looked up once, with a time limit, never failing the
+                // download. Before the encryption (private) or the MediaStore scan
+                // (public), so both see the final file.
+                embedLyricsAndCoverInFile(r, meta, out, ext, coverFile)
+                if (public) {
+                    // In plain in the Download folder: visible in the file manager, playable by
+                    // other apps. Announced to MediaStore so it shows up right away.
+                    android.media.MediaScannerConnection.scanFile(Graph.app, arrayOf(out.path), arrayOf(mimeForExt(ext)), null)
+                } else {
+                    // Kept encrypted: the file only plays in Myspoti, on this phone.
+                    runInterruptible(Dispatchers.IO) { OfflineCrypto.encryptInPlace(Graph.app, out) }
+                }
                 OfflineTrack(
                     trackId = r.trackId, title = meta.title, artist = meta.artist, album = meta.album,
                     albumId = meta.albumId, durationMs = meta.durationMs, coverUrl = meta.coverUrl,
-                    file = out.name, cover = cover,
+                    file = out.name, cover = coverFile?.name ?: "",
                     source = if (quality == com.music.spotui.data.preferences.DownloadQuality.SMALL && file.lossy == null)
                         "${providerWithoutQuality(file.providerName)} AAC ${AacTranscoder.BITRATE / 1000} kbit/s" else file.provider,
                     verified = file.isrcMatched,
                     bytes = out.length(), addedAt = System.currentTimeMillis(), providerId = file.extensionId,
                     extensionQuality = com.music.spotui.extensions.Extensions.qualityLine(file.extensionId, app.myspoti.extensions.SettingSection.DOWNLOADS),
+                    public = public,
                 )
             }
         } finally {
             audioTmp.delete()
         }
+    }
+
+    /**
+     * Embeds the track's lyrics and cover into the just-downloaded [file], for
+     * other players. Lyrics: same setting as keeping them beside the download
+     * ("Download lyrics with songs"), same bar (a real, uncapped result only).
+     * Cover: the [coverFile] downloaded just before (null when it failed). Same
+     * rule for both: the download never fails for lyrics or cover — a timeout,
+     * no lyrics, no cover, or an embedding error just leaves the file as it was.
+     * The lyrics lookup is shared with [LyricsApi.keepForOffline], which runs
+     * right after and finds it in the cache.
+     */
+    private suspend fun embedLyricsAndCoverInFile(r: Request, meta: Meta, file: File, ext: String, coverFile: File?) {
+        val cover = coverFile?.takeIf { it.isFile }?.let { runCatching { it.readBytes() }.getOrNull() }
+        var lyrics: com.music.spotui.data.entity.Lyrics? = null
+        if (com.music.spotui.data.preferences.LyricsOfflinePref.on) {
+            val track = com.music.spotui.data.api.LyricsApi.Track(
+                r.trackId, meta.title, meta.artist, meta.album, meta.durationMs, meta.coverUrl)
+            lyrics = withTimeoutOrNull(LYRICS_WAIT_MS) {
+                runCatching { com.music.spotui.data.api.LyricsApi.fetch(track) }.getOrNull()
+            }?.takeIf { com.music.spotui.data.api.LyricsApi.keepable(it) }
+        }
+        if (lyrics == null && cover == null) return
+        runCatching { LyricsEmbedder.embed(file, ext, lyrics, cover, OfflineStore.isPublicAudio) }
+            .onSuccess { if (it) Log.i(TAG, "${meta.title}: lyrics and cover embedded in the file") }
+            .onFailure { Log.w(TAG, "${meta.title}: lyrics/cover not embedded: ${it.message}") }
     }
 
     private class Fetched(
@@ -774,4 +827,47 @@ object OfflineDownloader {
     /** "US-UM7-17-03861" / "usum71703861" → "USUM71703861"; null when not an ISRC. */
     fun normalizeIsrc(raw: String): String? =
         raw.uppercase().filter { it.isLetterOrDigit() }.takeIf { Regex("[A-Z]{2}[A-Z0-9]{3}\\d{7}").matches(it) }
+
+    /**
+     * A readable file name for a visible download: "Artist - Title [trackId].flac". The track id
+     * stays in the name so two recordings of one song never collide; characters a file manager
+     * or MediaStore would choke on are replaced, and the readable part is capped so the whole
+     * name stays well under the 255-byte file-name limit (shrunk by bytes, not characters).
+     */
+    internal fun publicFileName(title: String, artist: String, trackId: String, ext: String): String {
+        val clean = { s: String ->
+            s.replace(Regex("[/\\\\:*?\"<>|\\p{Cntrl}]"), "-").replace(Regex("\\s+"), " ").trim()
+        }
+        var head = listOf(clean(artist), clean(title)).filter { it.isNotEmpty() }.joinToString(" - ")
+            .take(100).trimEnd('-', ' ', '.')
+        while (head.isNotEmpty() && "$head [$trackId].$ext".toByteArray(Charsets.UTF_8).size > 200) {
+            head = head.dropLast(1).trimEnd('-', ' ', '.')
+        }
+        val base = if (head.isEmpty()) trackId else "$head [$trackId]"
+        return "$base.$ext"
+    }
+
+    /** The MIME type MediaStore wants for a scanned download. */
+    internal fun mimeForExt(ext: String): String = when (ext.lowercase()) {
+        "flac" -> "audio/flac"
+        "m4a" -> "audio/mp4"
+        "mp3" -> "audio/mpeg"
+        else -> "audio/*"
+    }
+
+    /**
+     * Moves [from] to [to]: a rename when both are on one filesystem, else a copy (the temp
+     * folder is internal storage, the Download folder is shared storage: a rename across them fails).
+     * A copy that ends short leaves no partial file behind.
+     */
+    private fun moveFile(from: File, to: File): Boolean {
+        if (from.renameTo(to)) return true
+        val ok = runCatching {
+            to.parentFile?.mkdirs()
+            from.inputStream().use { input -> to.outputStream().use { output -> input.copyTo(output) } }
+            from.length() == to.length()
+        }.getOrDefault(false)
+        if (ok) from.delete() else to.delete()
+        return ok
+    }
 }

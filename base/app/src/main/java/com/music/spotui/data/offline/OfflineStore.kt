@@ -2,10 +2,12 @@ package com.music.spotui.data.offline
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import com.music.spotui.data.entity.SongsModel
 import com.music.spotui.data.local.LocalTrack
+import com.music.spotui.data.preferences.isPublicDownloads
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -44,6 +46,11 @@ data class OfflineTrack(
      * ("Quality: FLAC", manifest `role: quality`), for Stats for nerds; null without one.
      */
     val extensionQuality: String? = null,
+    /**
+     * The audio file lives in the phone's Download folder (Download/Orpheon), not the private store:
+     * downloaded while "visible files" was on. Older entries are private (false).
+     */
+    val public: Boolean = false,
 ) {
     val isEpisode: Boolean get() = kind == KIND_PODCAST
 
@@ -52,6 +59,7 @@ data class OfflineTrack(
         .put("albumId", albumId).put("duration", durationMs).put("coverUrl", coverUrl)
         .put("file", file).put("cover", cover).put("source", source).put("verified", verified)
         .put("bytes", bytes).put("added", addedAt).put("kind", kind)
+        .put("public", public)
         .apply { providerId?.let { put("providerId", it) } }
         .apply { extensionQuality?.let { put("extQuality", it) } }
 
@@ -70,6 +78,8 @@ data class OfflineTrack(
             // Absent in an index written before it was kept: unknown.
             providerId = o.optString("providerId").ifBlank { null },
             extensionQuality = o.optString("extQuality").ifBlank { null },
+            // Absent in an index written before visible files: those entries are all private.
+            public = o.optBoolean("public"),
         )
     }
 }
@@ -87,12 +97,52 @@ sealed interface OfflineStatus {
 }
 
 /**
- * Downloaded songs. Files live in the app's private storage (filesDir/offline), so
- * only Myspoti plays them: they are not in the phone's Music folder or MediaStore.
+ * Downloaded songs. Files live in the app's private storage (filesDir/offline), encrypted, so
+ * only Myspoti plays them — unless "visible files" is on (see [isPublicAudio]): new songs are
+ * then saved in plain in the phone's Download folder (Download/Orpheon), where the file manager and
+ * other players see them. Each entry records where its own file is ([OfflineTrack.public]).
  */
 object OfflineStore {
     private lateinit var root: File
     private val lock = Any()
+
+    /** "Visible files" asked for in Settings (the effective state also needs All files access). */
+    @Volatile private var publicPref = false
+
+    /** Re-reads the "visible files" setting (Settings, and [init]). */
+    fun refreshPublicMode(context: Context) { publicPref = isPublicDownloads(context) }
+
+    /** Android's "All files access" for this app (API 30+): what lets it write to Download/. */
+    private fun allFilesAccess(): Boolean =
+        android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R &&
+            Environment.isExternalStorageManager()
+
+    /** New songs go to the Download folder in plain files (else private, encrypted). */
+    val isPublicAudio: Boolean get() = publicPref && allFilesAccess()
+
+    /**
+     * The Download folder's Orpheon directory. Direct File access there needs All files access;
+     * `getExternalStoragePublicDirectory` is deprecated since API 29 but is still the way to
+     * address a public directory by path (MediaStore cannot serve this File-based store).
+     */
+    private val publicSongDir: File
+        @Suppress("DEPRECATION")
+        get() = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Orpheon")
+
+    /** Where visible files went before the folder moved (Music/Orpheon): still read, never written. */
+    private val legacyPublicSongDir: File
+        @Suppress("DEPRECATION")
+        get() = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "Orpheon")
+
+    /** Where a new song's audio goes: the Download folder when visible files are on, else private. */
+    val songAudioDir: File get() = if (isPublicAudio) publicSongDir else audioDir
+
+    /** Where [t]'s audio is, by where it was downloaded: the Download folder, or the private store. */
+    fun audioFile(t: OfflineTrack): File {
+        if (!t.public) return File(audioDir, t.file)
+        // A file saved in Music/ before the move is still read there; new downloads go to Download/.
+        return File(publicSongDir, t.file).takeIf { it.isFile } ?: File(legacyPublicSongDir, t.file)
+    }
 
     /** Downloaded songs by Spotify track id; every screen reads this. */
     val tracks: SnapshotStateMap<String, OfflineTrack> = mutableStateMapOf()
@@ -103,12 +153,16 @@ object OfflineStore {
 
     fun init(context: Context) {
         if (::root.isInitialized) return
-        val plain = load(File(context.filesDir, "offline"))
+        refreshPublicMode(context)
+        // Only the private store's files: a file in the Download folder must never be encrypted.
+        val plain = load(File(context.filesDir, "offline")).filter { it.parentFile == audioDir }
         // Songs downloaded before encryption existed: encrypted once, in the background. One file at a
         // time under [folderLock], and not after the folder was moved (another account's in its place,
         // where a file of the same name would be read as this one's): what is left goes at the next launch.
+        // Skipped while visible files are on: new songs go to Download/ in plain, and the old private
+        // files are encrypted again at the next launch with the setting off.
         val start = moves
-        if (plain.isNotEmpty()) Thread {
+        if (!isPublicAudio && plain.isNotEmpty()) Thread {
             for (f in plain) {
                 val done = synchronized(folderLock) {
                     if (moves != start) return@synchronized false
@@ -131,6 +185,7 @@ object OfflineStore {
 
     /** Reads the downloads folder again (main thread): another account's downloads were put in its place. */
     fun reopen(context: Context) {
+        refreshPublicMode(context)
         status.clear()
         load(File(context.filesDir, "offline"))
     }
@@ -154,22 +209,28 @@ object OfflineStore {
             readIndex(backupFile)
         }
         val list = read?.tracks.orEmpty()
-        val kept = list.filter { File(audioDir, it.file).isFile }
+        // A public file cannot be checked without All files access: the entry is kept rather
+        // than dropped from the index (it comes back when access is granted again).
+        val kept = list.filter { t -> (t.public && !isPublicAudio) || audioFile(t).isFile }
         kept.forEach { tracks[it.trackId] = it }
-        val names = kept.map { it.file }.toSet()
+        val names = kept.filter { !it.public }.map { it.file }.toSet()
+        val publicNames = kept.filter { it.public }.map { it.file }.toSet()
         val covers = kept.map { it.cover }.toSet()
         if (read != null && read.complete && read.file == indexFile) {
             if (kept.size != list.size) writeIndex()
             audioDir.listFiles()?.forEach { if (it.name !in names) it.delete() }
+            if (isPublicAudio) publicSongDir.listFiles()?.forEach { if (it.name !in publicNames) it.delete() }
             coverDir.listFiles()?.forEach { if (it.name !in covers) it.delete() }
             val lyrics = kept.map { lyricsName(it.trackId) }.toSet()
             lyricsDir.listFiles()?.forEach { if (it.name !in lyrics) it.delete() }
         } else {
-            val aside = keepAside(audioDir, names, File(recoveredDir, "audio")) + keepAside(coverDir, covers, File(recoveredDir, "covers"))
+            val aside = keepAside(audioDir, names, File(recoveredDir, "audio")) +
+                (if (isPublicAudio) keepAside(publicSongDir, publicNames, File(recoveredDir, "public-audio")) else 0) +
+                keepAside(coverDir, covers, File(recoveredDir, "covers"))
             if (aside > 0) runCatching { app.myspoti.host.android.Logbook.log("offline: download index not read in full; $aside files the index does not list kept in ${recoveredDir.name}/") }
             if (read != null && read.complete) writeIndex()
         }
-        return kept.map { File(audioDir, it.file) }
+        return kept.map { audioFile(it) }
     }
 
     /**
@@ -221,7 +282,7 @@ object OfflineStore {
     fun remove(trackId: String) {
         synchronized(lock) {
             val t = tracks.remove(trackId) ?: return
-            File(audioDir, t.file).delete()
+            audioFile(t).delete()
             if (t.cover.isNotBlank()) File(coverDir, t.cover).delete()
             lyricsFile(trackId)?.delete()
             writeIndex()
@@ -235,6 +296,9 @@ object OfflineStore {
             tracks.clear()
             status.clear()
             audioDir.listFiles()?.forEach { it.delete() }
+            // The indexed public files go even with the setting off; strays go when public mode is on.
+            all.filter { it.public }.forEach { audioFile(it).delete() }
+            if (isPublicAudio) publicSongDir.listFiles()?.forEach { it.delete() }
             coverDir.listFiles()?.forEach { it.delete() }
             lyricsDir.listFiles()?.forEach { it.delete() }
             writeIndex()
@@ -269,7 +333,6 @@ object OfflineStore {
     /** Downloaded songs, newest first. */
     fun list(): List<OfflineTrack> = tracks.values.sortedByDescending { it.addedAt }
 
-    fun audioFile(t: OfflineTrack) = File(audioDir, t.file)
     fun coverFile(t: OfflineTrack): File? = t.cover.takeIf { it.isNotBlank() }?.let { File(coverDir, it) }?.takeIf { it.isFile }
 
     /** For the local player (player, mini player, notification…). */

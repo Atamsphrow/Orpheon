@@ -780,6 +780,9 @@
     <string name="settings_system_font_detail">Shows the app\'s text in your phone\'s font instead of Orpheon\'s own</string>
     <string name="settings_download_lyrics_title">Download lyrics with songs</string>
     <string name="settings_download_lyrics_detail">A downloaded song keeps its lyrics, shown without a connection</string>
+    <string name="settings_download_public_title">Save downloads as visible files</string>
+    <string name="settings_download_public_detail">New songs are saved in plain in Download/Orpheon, visible in the file manager and playable by other apps. Songs already downloaded stay where they are.</string>
+    <string name="settings_download_public_needs_access">“All files access” is not granted yet: open Android settings to allow it, then downloads go to Download/Orpheon.</string>
     <string name="settings_section_storage">Storage</string>
     <string name="settings_storage_media_cache">Media cache</string>
     <string name="settings_storage_media_cache_detail">Canvas videos kept on this phone, so they are not downloaded again.</string>
