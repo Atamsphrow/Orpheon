@@ -112,6 +112,7 @@
     <string name="download_badge_downloaded_content_description" formatted="false">Downloaded</string>
     <string name="download_badge_downloading_content_description" formatted="false">Downloading</string>
     <string name="download_badge_error_content_description" formatted="false">Download failed</string>
+    <string name="lyrics_badge_content_description" formatted="false">Has lyrics</string>
     <string name="download_notification_downloading" formatted="false">Downloading…</string>
     <string name="toast_undownload" formatted="false">Download removed.</string>
     <string name="playlist_entity_remove_download_dialog_title" formatted="false">Remove from downloads?</string>

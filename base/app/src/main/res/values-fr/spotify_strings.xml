@@ -112,6 +112,7 @@
     <string name="download_badge_downloaded_content_description" formatted="false">Téléchargé</string>
     <string name="download_badge_downloading_content_description" formatted="false">Téléchargement en cours</string>
     <string name="download_badge_error_content_description" formatted="false">Échec du téléchargement</string>
+    <string name="lyrics_badge_content_description" formatted="false">Avec paroles</string>
     <string name="download_notification_downloading" formatted="false">Téléchargement en cours…</string>
     <string name="toast_undownload" formatted="false">Téléchargement supprimé.</string>
     <string name="playlist_entity_remove_download_dialog_title" formatted="false">Supprimer des téléchargements ?</string>

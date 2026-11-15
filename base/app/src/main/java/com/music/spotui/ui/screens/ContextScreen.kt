@@ -1489,6 +1489,7 @@ private fun TrackRow(
                     com.music.spotui.ui.components.DownloadBadge(offline, size = 14.dp)
                     Spacer(Modifier.width(6.dp))
                 }
+                com.music.spotui.ui.components.LyricsBadge(song, size = 14.dp)
                 if (song.explicit) {
                     ExplicitBadge()
                     Spacer(Modifier.width(6.dp))
