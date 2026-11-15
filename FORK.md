@@ -11,3 +11,7 @@ This is a modified fork of [kota-zo/Orpheon](https://github.com/kota-zo/Orpheon)
 - A lyrics badge in the track rows (checked over Wi-Fi only, cached).
 
 Upstream license and credits are kept unchanged.
+
+Note: GitHub disables workflows on a forked repository by default; Actions was
+enabled on this fork on 2026-11-15 via the « I understand my workflows »
+button on the Actions page, so pushes to `main` run the Android workflow.
