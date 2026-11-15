@@ -1,7 +1,9 @@
 # Fork notes
 
 This is a modified fork of [kota-zo/Orpheon](https://github.com/kota-zo/Orpheon)
-(Orpheon, GPL-3.0). Modifications are marked in the commit messages on `main`:
+(Orpheon, GPL-3.0), itself the continuation of
+[Myspoti](https://github.com/kota-zo/myspoti), named as the origin per the
+project's notice. Modifications are marked in the commit messages on `main`:
 
 - Visible downloads in `Download/Orpheon` (was `Music/Orpheon`); older files
   in `Music/Orpheon` are still read.
