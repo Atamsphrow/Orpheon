@@ -43,7 +43,9 @@ import java.util.concurrent.ConcurrentHashMap
  *    "visible files" is on ([OfflineStore.isPublicAudio]): the song is then saved in plain in
  *    the phone's Download folder (Download/Orpheon), where the file manager and other players see it.
  * 4. embeds the track's lyrics in the file itself ([LyricsEmbedder]: USLT/SYLT, `©lyr`,
- *    Vorbis LYRICS — plus a `.lrc` sidecar next to a visible FLAC), for other players.
+ *    Vorbis LYRICS — plus a `.lrc` sidecar next to a visible FLAC), for other players,
+ *    and the catalogue's artist/title/album in the file's tags (most files arrive
+ *    with empty or unknown tags).
  *
  * No extension giving download files: downloads say to install one. Nothing that fails the
  * check is kept: the song is marked unavailable instead.
@@ -382,14 +384,15 @@ object OfflineDownloader {
     }
 
     /**
-     * Embeds the track's lyrics and cover into the just-downloaded [file], for
-     * other players. Lyrics: same setting as keeping them beside the download
-     * ("Download lyrics with songs"), same bar (a real, uncapped result only).
-     * Cover: the [coverFile] downloaded just before (null when it failed). Same
-     * rule for both: the download never fails for lyrics or cover — a timeout,
-     * no lyrics, no cover, or an embedding error just leaves the file as it was.
-     * The lyrics lookup is shared with [LyricsApi.keepForOffline], which runs
-     * right after and finds it in the cache.
+     * Embeds the track's lyrics, cover and catalogue tags into the just-downloaded
+     * [file], for other players. Lyrics: same setting as keeping them beside the
+     * download ("Download lyrics with songs"), same bar (a real, uncapped result only).
+     * Cover: the [coverFile] downloaded just before (null when it failed). Tags: the
+     * catalogue's title/artist/album, written even when there are no lyrics and no
+     * cover. Same rule for all three: the download never fails for lyrics, cover or
+     * tags — a timeout, no lyrics, no cover, no tags, or an embedding error just
+     * leaves the file as it was. The lyrics lookup is shared with
+     * [LyricsApi.keepForOffline], which runs right after and finds it in the cache.
      */
     private suspend fun embedLyricsAndCoverInFile(r: Request, meta: Meta, file: File, ext: String, coverFile: File?) {
         val cover = coverFile?.takeIf { it.isFile }?.let { runCatching { it.readBytes() }.getOrNull() }
@@ -401,10 +404,18 @@ object OfflineDownloader {
                 runCatching { com.music.spotui.data.api.LyricsApi.fetch(track) }.getOrNull()
             }?.takeIf { com.music.spotui.data.api.LyricsApi.keepable(it) }
         }
-        if (lyrics == null && cover == null) return
-        runCatching { LyricsEmbedder.embed(file, ext, lyrics, cover, OfflineStore.isPublicAudio) }
-            .onSuccess { if (it) Log.i(TAG, "${meta.title}: lyrics and cover embedded in the file") }
-            .onFailure { Log.w(TAG, "${meta.title}: lyrics/cover not embedded: ${it.message}") }
+        // The catalogue's tags go in even when there are no lyrics and no cover:
+        // most files arrive with empty or unknown tags.
+        val tags = LyricsEmbedder.TrackTags(meta.title, meta.artist, meta.album)
+        if (lyrics == null && cover == null && !tags.hasAny) return
+        val what = listOfNotNull(
+            "tags".takeIf { tags.hasAny },
+            "lyrics".takeIf { lyrics != null },
+            "cover".takeIf { cover != null },
+        ).joinToString(", ")
+        runCatching { LyricsEmbedder.embed(file, ext, lyrics, cover, OfflineStore.isPublicAudio, tags) }
+            .onSuccess { if (it) Log.i(TAG, "${meta.title}: $what embedded in the file") }
+            .onFailure { Log.w(TAG, "${meta.title}: $what not embedded: ${it.message}") }
     }
 
     private class Fetched(
