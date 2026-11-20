@@ -28,6 +28,7 @@ class LyricsEmbedderTest {
     private val plain = Lyrics(lines, synced = false)
     private val lrc = "[00:00.00]Première ligne\n[00:01.50]Deuxième ligne, avec accents : café — naïve\n[00:03.20]Dernière ligne"
     private val plainText = "Première ligne\nDeuxième ligne, avec accents : café — naïve\nDernière ligne"
+    private val tags = LyricsEmbedder.TrackTags("Vrai Titre", "Vrai Artiste", "Vrai Album")
 
     // ── LRC text ──
 
@@ -138,6 +139,51 @@ class LyricsEmbedderTest {
         val (_, map) = readVorbis(embedded)!!
         assertEquals(lrc, map["LYRICS"])
         assertEquals(1, map.keys.count { it == "LYRICS" })
+    }
+
+    /** How many times [needle] occurs in [bytes] as text (duplicate-field check). */
+    private fun countOccurrences(bytes: ByteArray, needle: String): Int =
+        bytes.toString(Charsets.UTF_8).split(needle).size - 1
+
+    @Test fun flacTagsAreWrittenAndOverwrite() {
+        val embedded = LyricsEmbedder.rebuildFlacHead(flacHead(withComments = true), lrc, tags = tags)
+        val (vendor, map) = readVorbis(embedded)!!
+        assertEquals("TestVendor", vendor)
+        assertEquals("Vrai Artiste", map["ARTIST"])
+        assertEquals("Vrai Titre", map["TITLE"])
+        assertEquals("Vrai Album", map["ALBUM"])
+        assertEquals(lrc, map["LYRICS"])
+        // The old ARTIST/TITLE were replaced, not duplicated.
+        assertEquals(1, countOccurrences(embedded, "ARTIST="))
+        assertEquals(1, countOccurrences(embedded, "TITLE="))
+        assertEquals(1, countOccurrences(embedded, "ALBUM="))
+    }
+
+    @Test fun flacTagsWithoutLyricsStillWrite() {
+        val embedded = LyricsEmbedder.rebuildFlacHead(flacHead(withComments = true), "", tags = tags)
+        val (_, map) = readVorbis(embedded)!!
+        assertEquals("Vrai Artiste", map["ARTIST"])
+        assertEquals("Vrai Titre", map["TITLE"])
+        assertEquals("Vrai Album", map["ALBUM"])
+        assertNull(map["LYRICS"])
+    }
+
+    @Test fun flacTagsCreateACommentBlockWhenThereIsNone() {
+        val embedded = LyricsEmbedder.rebuildFlacHead(flacHead(), "", tags = tags)
+        val (vendor, map) = readVorbis(embedded)!!
+        assertEquals("Orpheon", vendor)
+        assertEquals("Vrai Artiste", map["ARTIST"])
+        assertEquals("Vrai Titre", map["TITLE"])
+        assertEquals("Vrai Album", map["ALBUM"])
+    }
+
+    @Test fun flacBlankTagValuesLeaveExistingAlone() {
+        val partial = LyricsEmbedder.TrackTags("Nouveau Titre", "", "")
+        val embedded = LyricsEmbedder.rebuildFlacHead(flacHead(withComments = true), "", tags = partial)
+        val (_, map) = readVorbis(embedded)!!
+        assertEquals("Nouveau Titre", map["TITLE"])
+        assertEquals("Test Artist", map["ARTIST"])
+        assertNull(map["ALBUM"])
     }
 
     @Test fun flacNonFlacHeadIsRefused() {
@@ -335,6 +381,44 @@ class LyricsEmbedderTest {
         assertNotNull(frames.firstOrNull { it.first == "SYLT" })
     }
 
+    @Test fun mp3TagsOverwriteInV23AndKeepOtherFrames() {
+        val tag = id3Tag(3, listOf(
+            textFrame("TIT2", "Ancien Titre", 3),
+            textFrame("TPE1", "Ancien Artiste", 3),
+            textFrame("TCON", "Rock", 3),
+        ))
+        val rebuilt = LyricsEmbedder.rebuildMp3Tag(tag, null, null, tags)
+        assertEquals(3, rebuilt.tagBytes[3].toInt() and 0xFF)
+        val frames = readId3Frames(rebuilt.tagBytes)
+        assertEquals("Vrai Titre", decodeFrameText(frames.first { it.first == "TIT2" }.second))
+        assertEquals("Vrai Artiste", decodeFrameText(frames.first { it.first == "TPE1" }.second))
+        assertEquals("Vrai Album", decodeFrameText(frames.first { it.first == "TALB" }.second))
+        assertEquals("Rock", decodeFrameText(frames.first { it.first == "TCON" }.second))
+        assertEquals(1, frames.count { it.first == "TIT2" })
+        assertEquals(1, frames.count { it.first == "TPE1" })
+        assertNull(frames.firstOrNull { it.first == "USLT" })
+        assertEquals("Vrai Titre", LyricsEmbedder.readMp3TextFrame(rebuilt.tagBytes, "TIT2"))
+    }
+
+    @Test fun mp3TagsOnANewTagAreV24Utf8() {
+        val rebuilt = LyricsEmbedder.rebuildMp3Tag(ByteArray(0), null, null, tags)
+        assertEquals(4, rebuilt.tagBytes[3].toInt() and 0xFF)
+        val frames = readId3Frames(rebuilt.tagBytes)
+        assertEquals("Vrai Titre", decodeFrameText(frames.first { it.first == "TIT2" }.second))
+        assertEquals("Vrai Artiste", decodeFrameText(frames.first { it.first == "TPE1" }.second))
+        assertEquals("Vrai Album", decodeFrameText(frames.first { it.first == "TALB" }.second))
+    }
+
+    @Test fun mp3BlankTagValuesLeaveExistingFramesAlone() {
+        val tag = id3Tag(3, listOf(textFrame("TIT2", "Ancien Titre", 3), textFrame("TPE1", "Ancien Artiste", 3)))
+        val partial = LyricsEmbedder.TrackTags("Nouveau Titre", "", "")
+        val rebuilt = LyricsEmbedder.rebuildMp3Tag(tag, null, null, partial)
+        val frames = readId3Frames(rebuilt.tagBytes)
+        assertEquals("Nouveau Titre", decodeFrameText(frames.first { it.first == "TIT2" }.second))
+        assertEquals("Ancien Artiste", decodeFrameText(frames.first { it.first == "TPE1" }.second))
+        assertNull(frames.firstOrNull { it.first == "TALB" })
+    }
+
     @Test fun mp3CorruptExtendedHeaderSizeDoesNotCrash() {
         // v2.3 extended-header size is a signed be32: 0x80000000 reads as -2^31,
         // and an unchecked offset would crash the frame walk.
@@ -415,6 +499,9 @@ class LyricsEmbedderTest {
 
     private val LYR = byteArrayOf(0xA9.toByte(), 'l'.code.toByte(), 'y'.code.toByte(), 'r'.code.toByte())
     private val TOO = byteArrayOf(0xA9.toByte(), 't'.code.toByte(), 'o'.code.toByte(), 'o'.code.toByte())
+    private val NAM = byteArrayOf(0xA9.toByte(), 'n'.code.toByte(), 'a'.code.toByte(), 'm'.code.toByte())
+    private val ART = byteArrayOf(0xA9.toByte(), 'A'.code.toByte(), 'R'.code.toByte(), 'T'.code.toByte())
+    private val ALB = byteArrayOf(0xA9.toByte(), 'a'.code.toByte(), 'l'.code.toByte(), 'b'.code.toByte())
 
     /** A minimal MP4: ftyp + moov (mvhd, trak with stco, optional udta) + mdat. */
     private fun m4aBytes(withUdta: Boolean = true): ByteArray {
@@ -466,6 +553,22 @@ class LyricsEmbedderTest {
         }
         val lyr = findAtom(current, 0, current.size, LYR) ?: return null
         val payload = current.copyOfRange(lyr.first + 8, lyr.first + lyr.second)
+        val data = findAtom(payload, 0, payload.size, typeBytes("data")) ?: return null
+        return payload.copyOfRange(data.first + 16, data.first + data.second).toString(Charsets.UTF_8)
+    }
+
+    /** The text of a text atom of [type] in [bytes]'s ilst, or null. Independent of the writer. */
+    private fun m4aText(bytes: ByteArray, type: ByteArray): String? {
+        val moov = findAtom(bytes, 0, bytes.size, typeBytes("moov")) ?: return null
+        var current = bytes.copyOfRange(moov.first + 8, moov.first + moov.second)
+        var start = 0
+        for (step in listOf("udta", "meta", "ilst")) {
+            val found = findAtom(current, start, current.size, typeBytes(step)) ?: return null
+            current = current.copyOfRange(found.first + 8, found.first + found.second)
+            start = if (step == "meta") 4 else 0
+        }
+        val atom = findAtom(current, 0, current.size, type) ?: return null
+        val payload = current.copyOfRange(atom.first + 8, atom.first + atom.second)
         val data = findAtom(payload, 0, payload.size, typeBytes("data")) ?: return null
         return payload.copyOfRange(data.first + 16, data.first + data.second).toString(Charsets.UTF_8)
     }
@@ -528,6 +631,38 @@ class LyricsEmbedderTest {
             current = current.copyOfRange(found.first + 8, found.first + found.second)
         }
         assertEquals(1, readAtoms(current, 0, current.size).count { it.third.contentEquals(LYR) })
+    }
+
+    @Test fun m4aTagsAreWrittenAndTooPreserved() {
+        val embedded = LyricsEmbedder.embedM4a(m4aBytes(), "", tags = tags)
+        assertEquals("Vrai Titre", m4aText(embedded, NAM))
+        assertEquals("Vrai Artiste", m4aText(embedded, ART))
+        assertEquals("Vrai Album", m4aText(embedded, ALB))
+        assertEquals("Vrai Titre", LyricsEmbedder.readM4aTextAtom(embedded, NAM))
+        // ©too survives in the same ilst, and no lyrics were fabricated.
+        assertEquals("Lavf", m4aText(embedded, TOO))
+        assertNull(m4aLyr(embedded))
+    }
+
+    @Test fun m4aTagsReplaceNotDuplicate() {
+        val first = LyricsEmbedder.embedM4a(m4aBytes(), "", tags = tags)
+        val other = LyricsEmbedder.TrackTags("Autre Titre", "Autre Artiste", "Autre Album")
+        val second = LyricsEmbedder.embedM4a(first, "", tags = other)
+        assertEquals("Autre Titre", m4aText(second, NAM))
+        assertEquals("Autre Artiste", m4aText(second, ART))
+        assertEquals("Autre Album", m4aText(second, ALB))
+        assertEquals(1, countIlstAtoms(second, NAM))
+        assertEquals(1, countIlstAtoms(second, ART))
+        assertEquals(1, countIlstAtoms(second, ALB))
+    }
+
+    @Test fun m4aBlankTagValuesLeaveExistingAtomsAlone() {
+        val withTags = LyricsEmbedder.embedM4a(m4aBytes(), "", tags = tags)
+        val partial = LyricsEmbedder.TrackTags("Nouveau Titre", "", "")
+        val embedded = LyricsEmbedder.embedM4a(withTags, "", tags = partial)
+        assertEquals("Nouveau Titre", m4aText(embedded, NAM))
+        assertEquals("Vrai Artiste", m4aText(embedded, ART))
+        assertEquals("Vrai Album", m4aText(embedded, ALB))
     }
 
     @Test fun m4aWithoutMoovIsRefused() {
@@ -830,6 +965,40 @@ class LyricsEmbedderTest {
         val before = flacHead() + "AUDIO".toByteArray(Charsets.US_ASCII)
         flac.writeBytes(before)
         assertFalse(LyricsEmbedder.embed(flac, "flac", null, null, public = false))
+        assertTrue(flac.readBytes().contentEquals(before))
+    }
+
+    @Test fun fileLevelTagsOnlyEmbedsFlac() = runBlocking {
+        val dir = tempDir()
+        val flac = File(dir, "song.flac")
+        flac.writeBytes(flacHead(withComments = true) + "AUDIO".toByteArray(Charsets.US_ASCII))
+        assertTrue(LyricsEmbedder.embed(flac, "flac", null, null, public = false, tags = tags))
+        val (_, map) = readVorbis(flac.readBytes())!!
+        assertEquals("Vrai Artiste", map["ARTIST"])
+        assertEquals("Vrai Titre", map["TITLE"])
+        assertEquals("Vrai Album", map["ALBUM"])
+        // No lyrics: no sidecar, even when public.
+        assertFalse(File(dir, "song.lrc").exists())
+    }
+
+    @Test fun fileLevelTagsOnlyEmbedsMp3WithoutTag() = runBlocking {
+        val dir = tempDir()
+        val mp3 = File(dir, "song.mp3")
+        mp3.writeBytes(byteArrayOf(0xFF.toByte(), 0xFB.toByte(), 0x90.toByte(), 0x00.toByte()) + ByteArray(100))
+        assertTrue(LyricsEmbedder.embed(mp3, "mp3", null, null, public = false, tags = tags))
+        val frames = readId3Frames(mp3.readBytes())
+        assertEquals("Vrai Titre", decodeFrameText(frames.first { it.first == "TIT2" }.second))
+        assertEquals("Vrai Artiste", decodeFrameText(frames.first { it.first == "TPE1" }.second))
+        assertEquals("Vrai Album", decodeFrameText(frames.first { it.first == "TALB" }.second))
+        assertNull(frames.firstOrNull { it.first == "USLT" })
+    }
+
+    @Test fun fileLevelBlankTagsDoNothing() = runBlocking {
+        val dir = tempDir()
+        val flac = File(dir, "song.flac")
+        val before = flacHead() + "AUDIO".toByteArray(Charsets.US_ASCII)
+        flac.writeBytes(before)
+        assertFalse(LyricsEmbedder.embed(flac, "flac", null, null, public = false, tags = LyricsEmbedder.TrackTags("", "", "")))
         assertTrue(flac.readBytes().contentEquals(before))
     }
 }
